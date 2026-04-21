@@ -67,3 +67,4 @@ docker compose up --build
 
 ## Notes
 - Make sure your database is running before starting the app.
+- use pdf in travel_guide example or similar to get agent to recommend destination accordingly
