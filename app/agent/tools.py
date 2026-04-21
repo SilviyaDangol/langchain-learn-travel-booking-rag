@@ -1,14 +1,16 @@
 import re
 from datetime import datetime
 
-from langchain.tools import tool
+from langchain.tools import ToolRuntime, tool
 from sqlmodel import Session, select
 
+from app.agent.context import AgentContext
 from app.agent import memory
 from app.db.db import engine
 from app.db.models.bookings import DestinationBooking
 from app.db.models.user_metadata import UserPreferenceMemory, UserProfile
-from app.rag_helpers.vectorstore import destination_vector_store, vector_store
+from app.config import Config
+from app.rag_helpers.vectorstore import destination_vector_store, hybrid_search, vector_store
 
 
 def _extract_prices(content: str) -> list[float]:
@@ -49,6 +51,10 @@ def get_user_preferences(user_id: str) -> str:
     return preference_row.preferences
 
 
+def _runtime_user_id(runtime: ToolRuntime[AgentContext]) -> str:
+    return runtime.context.user_id
+
+
 @tool(
     "retrieve_context",
     description="Retrieves information related to user query from the document they provided",
@@ -56,7 +62,11 @@ def get_user_preferences(user_id: str) -> str:
 )
 def retrieve_context(query: str):
     """Retrieve information to help answer a query."""
-    retrieved_docs = vector_store.similarity_search(query, k=2)
+    try:
+        retrieved_docs = hybrid_search(query=query, k=2)
+    except Exception:
+        # Fallback keeps retrieval available even if sparse encoder/model is unavailable.
+        retrieved_docs = vector_store.similarity_search(query, k=2)
     serialized = "\n\n".join(
         (f"Source: {doc.metadata}\nContent: {doc.page_content}") for doc in retrieved_docs
     )
@@ -66,12 +76,15 @@ def retrieve_context(query: str):
 @tool(
     "upsert_user_profile",
     description=(
-        "Create or update a user profile with user_id, name, and wallet balance. "
+        "Create or update a user profile with name and wallet balance for the runtime user. "
         "Call this before budget-aware destination recommendations."
     ),
 )
-def upsert_user_profile(user_id: str, name: str, wallet_balance: float) -> str:
+def upsert_user_profile(
+    name: str, wallet_balance: float, runtime: ToolRuntime[AgentContext]
+) -> str:
     """Create or update a user's budget profile."""
+    user_id = _runtime_user_id(runtime)
     with Session(engine) as session:
         profile = _profile_by_user_id(session, user_id)
         if profile is None:
@@ -101,37 +114,41 @@ def upsert_user_profile(user_id: str, name: str, wallet_balance: float) -> str:
         "(e.g., food, budget style, travel pace)."
     ),
 )
-def remember_user_preferences(user_id: str, preferences: str) -> str:
+def remember_user_preferences(
+    preferences: str, runtime: ToolRuntime[AgentContext]
+) -> str:
     """Create or update durable user preference memory."""
+    user_id = _runtime_user_id(runtime)
     cleaned_preferences = preferences.strip()
     if not cleaned_preferences:
         return "No preferences provided to remember."
     saved_in_store = memory.save_user_preferences(user_id, cleaned_preferences)
 
-    with Session(engine) as session:
-        preference_row = _preferences_by_user_id(session, user_id)
-        if preference_row is None:
-            preference_row = UserPreferenceMemory(
-                user_id=user_id, preferences=cleaned_preferences
-            )
-            session.add(preference_row)
-            action = "created"
-        else:
-            preference_row.preferences = cleaned_preferences
-            preference_row.updated_at = datetime.now()
-            action = "updated"
-        session.commit()
+    # with Session(engine) as session:
+    #     preference_row = _preferences_by_user_id(session, user_id)
+    #     if preference_row is None:
+    #         preference_row = UserPreferenceMemory(
+    #             user_id=user_id, preferences=cleaned_preferences
+    #         )
+    #         session.add(preference_row)
+    #         action = "created"
+    #     else:
+    #         preference_row.preferences = cleaned_preferences
+    #         preference_row.updated_at = datetime.now()
+    #         action = "updated"
+    #     session.commit()
     if saved_in_store:
         return f"Preference memory {action} for user_id={user_id} (MemoryStore + SQL sync)."
-    return f"Preference memory {action} for user_id={user_id} (SQL only fallback)."
+    # return f"Preference memory {action} for user_id={user_id} (SQL only fallback)."
 
 
 @tool(
     "view_user_preferences",
-    description="Read saved long-term user preferences for a given user_id.",
+    description="Read saved long-term user preferences for the runtime user.",
 )
-def view_user_preferences(user_id: str) -> str:
+def view_user_preferences(runtime: ToolRuntime[AgentContext]) -> str:
     """Return long-term preference memory for user."""
+    user_id = _runtime_user_id(runtime)
     preferences = get_user_preferences(user_id)
     return f"Saved preferences for {user_id}: {preferences}"
 
@@ -144,19 +161,26 @@ def view_user_preferences(user_id: str) -> str:
     ),
     response_format="content_and_artifact",
 )
-def search_destination(query: str, user_id: str):
+def search_destination(query: str, runtime: ToolRuntime[AgentContext]):
     """Search catalog and return options that match the user's budget."""
+    user_id = _runtime_user_id(runtime)
     with Session(engine) as session:
         profile = _profile_by_user_id(session, user_id)
 
     if profile is None:
         message = (
             f"No user profile found for user_id={user_id}. "
-            "Create one first with upsert_user_profile(user_id, name, wallet_balance)."
+            "Create one first with upsert_user_profile(name, wallet_balance)."
         )
         return message, []
 
-    retrieved_docs = destination_vector_store.similarity_search(query, k=8)
+    try:
+        retrieved_docs = hybrid_search(
+            query=query, k=8, namespace=Config.PINECONE_DESTINATIONS_NAMESPACE
+        )
+    except Exception:
+        # Fallback keeps destination search available if hybrid query fails.
+        retrieved_docs = destination_vector_store.similarity_search(query, k=8)
 
     affordable_docs = []
     rendered_chunks: list[str] = []
@@ -187,18 +211,18 @@ def search_destination(query: str, user_id: str):
     "book_destination",
     description=(
         "Create a confirmed booking after collecting required fields: "
-        "user_id, destination, total_cost, confirmed."
+        "destination, total_cost, confirmed."
     ),
 )
 def book_destination(
-    user_id: str,
     destination: str,
     total_cost: float,
     confirmed: bool,
+    runtime: ToolRuntime[AgentContext],
 ) -> str:
     """Persist a booking and deduct cost from wallet after explicit confirmation."""
+    user_id = _runtime_user_id(runtime)
     required_fields = {
-        "user_id": user_id,
         "destination": destination,
         "total_cost": total_cost,
     }

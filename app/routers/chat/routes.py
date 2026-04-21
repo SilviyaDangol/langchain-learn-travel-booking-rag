@@ -6,6 +6,7 @@ from sqlmodel import select
 from starlette.responses import JSONResponse
 
 from app.agent.agent import agent
+from app.agent.context import AgentContext
 from app.agent.tools import get_user_preferences
 from app.db.db import DBSessionDep
 from app.db.models.chat import ConversationSession
@@ -79,30 +80,26 @@ async def chat_with_agent(
             profile.updated_at = datetime.now()
         db.commit()
 
-    profile_name = profile.name if profile else message.name or "not provided"
+    profile_name = profile.name if profile else message.name or "user"
     profile_wallet = (
         profile.wallet_balance
         if profile is not None
-        else (
-            message.wallet_balance
-            if message.wallet_balance is not None
-            else "not provided"
-        )
+        else max(message.wallet_balance or 0.0, 0.0)
     )
     long_term_preferences = get_user_preferences(message.user_id)
-    user_context = (
-        "User context:\n"
-        f"- user_id: {message.user_id}\n"
-        f"- name: {profile_name}\n"
-        f"- wallet_balance: {profile_wallet}\n"
-        f"- long_term_preferences: {long_term_preferences}\n\n"
-        "Use this context when calling profile, recommendation, memory, and booking tools.\n"
+    config = {"configurable": {"thread_id": conversation_key}}
+    context = AgentContext(
+        user_id=message.user_id,
+        conversation_id=conversation_key,
+        name=profile_name,
+        wallet_balance=profile_wallet,
+        long_term_preferences=long_term_preferences,
     )
-    config ={"configurable": {"thread_id": conversation_key, "user_id": message.user_id}}
 
     result = agent.invoke(
-        {"messages": [{"role": "user", "content": f"{user_context}{message.query}"}]},
+        {"messages": [{"role": "user", "content": message.query}]},
         config,
+        context=context,
     )
     conversation.updated_at = datetime.now()
     db.add(conversation)

@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import UploadFile
 from langchain_community.document_loaders import PyPDFLoader
-from app.rag_helpers.vectorstore import vector_store,vector_store_for_namespace
+from app.rag_helpers.vectorstore import add_documents_hybrid
 
 from typing import List, Literal
 from langchain_core.documents import Document
@@ -76,8 +76,9 @@ async def process_documents(
     docs = await to_doc(file)
     docs = attach_metadata(docs, session_id, file_id)
     split_docs = await split_documents(docs, splitter_type)
-    store = vector_store_for_namespace(pinecone_namespace) # if the user is ingesting the holiday destinations catalog, use the destinations namespace in Pinecone.
-    vector_ids = store.add_documents(split_docs)
+    vector_ids = add_documents_hybrid(
+        split_docs, namespace=pinecone_namespace
+    )  # if the user is ingesting the holiday destinations catalog, use the destinations namespace in Pinecone.
     return vector_ids, file_id, session_id
 
 
