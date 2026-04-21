@@ -1,0 +1,40 @@
+# Git / metadata
+.git
+.gitignore
+.dockerignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Virtual env (image installs deps with uv)
+.venv/
+venv/
+env/
+
+# Secrets (use compose/env at runtime)
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local data / samples
+example_data/
+
+# Dev-only caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+*.log
