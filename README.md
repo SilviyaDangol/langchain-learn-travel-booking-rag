@@ -1,4 +1,4 @@
-# Lang Learn 3
+# Travel booking rag
 
 This is a langchain project that can:
 
@@ -51,10 +51,17 @@ docker compose up --build
 
 - `POST /ingest`
   - Upload a file (`.pdf` )
+  - has options to ingest a travel guide
+  - tools use the docs to give recommendations regarding travel spots
+  
 - `POST /chat/new`
-  - Create a new conversation, (creates a conversation id )
+  - Create a new conversation
+  - (creates a conversation id )
+  - 
 - `POST /chat/{conversation_id}`
-  - Send a message in a conversation, continuing from the conversation id generated from /chat/new
+  - Send a message in a conversation,
+  - continues from the conversation id generated from /chat/new
+  - remembers preferences and conversation history
 - `POST /ask/`
   - Quick chat flow (creates a conversation automatically), has no memory 
 
